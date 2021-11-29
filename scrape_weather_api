@@ -1,0 +1,182 @@
+"""
+Script to get hourly data from Weather Api and select which day is rainy or sunny.
+(If the day has more the two hours sun/rain is True, else False)
+"""
+from datetime import datetime, timedelta
+
+import pandas as pd
+import requests
+from geopy.geocoders import Nominatim
+
+# List of cities to get the weather data for
+LIST_OF_CITIES = [
+    "Warsaw",
+    "London",
+    "Berlin",
+    "Paris",
+    "Rome",
+    "Athens",
+    "Dublin",
+    "Lisbon",
+    "Moscow",
+    "Madrid",
+]
+
+
+def get_coordinates_by_city_name(cities: list[str]) -> dict[str, dict[str, float]]:
+    """Get latitude and longitude using city name.
+
+    It uses geopy to get location's latitude and longitude.
+
+    Args:
+        cities: city names to get coordinates of
+
+    Returns:
+         dict, where key is the name of the city from function argument,
+         and the value is another dict, containing lat and lon
+
+    Examples:
+        >>> get_coordinates_by_city_name(["Warsaw", "London"])
+        {
+            'Warsaw': {'lat': 52.2319581, 'lon': 21.0067249},
+            'London': {'lat': 51.5074, 'lon': 0.1278},
+        }
+    """
+    app = Nominatim(user_agent="zadanie")
+
+    cities_dict = {}
+    for city in cities:
+        location = app.geocode(city)
+        cities_dict[city] = {"lat": location.latitude, "lon": location.longitude}
+
+    return cities_dict
+
+
+def date_is_in_past(day: datetime) -> bool:
+    """Check whether date is past.
+
+    Function only checks date, not the time.
+    If today's date is passed, function returns False.
+
+    Args:
+        day: date to be checked
+
+    Returns:
+        True if date is before today, False otherwise
+    """
+    if day.date() < datetime.today().date():
+        return True
+    return False
+
+
+def prepare_request_url(lat: float, lon: float, day: datetime) -> str:
+    """Prepare api request url to retrieve hourly data from Weather Api.
+
+    Args:
+        lat: location's latitude
+        lon: location's longitude
+        day: The day to get request from Weather Api.
+
+    Returns:
+        request url for Weather API
+    """
+    api_key = "897ae282a24b95b1a04b2f71082e2708"
+    url = "https://api.openweathermap.org/data/2.5/onecall"
+
+    if date_is_in_past(day):
+        url += f"/timemachine?dt={int(day.timestamp())}&"
+    else:
+        url += "?"
+
+    url += f"lat={lat}&lon={lon}&appid={api_key}&units=metric"
+
+    return url
+
+
+def get_weather_data(day: datetime) -> pd.DataFrame:
+    """Get hourly data from Weather Api for all cities for given day.
+
+    Args:
+        day: The day to get request from Weather Api.
+
+    Returns:
+        hourly data about weather,
+        containing columns = [city, latitude, longitude, date, weather],
+        where weather is one of: Clear, Clouds or Rain.
+    """
+    list_of_cords = get_coordinates_by_city_name(LIST_OF_CITIES)
+    data_frame = pd.DataFrame()
+
+    for city in list_of_cords:
+
+        lat = list_of_cords[city]["lat"]
+        lon = list_of_cords[city]["lon"]
+        url = prepare_request_url(lat, lon, day)
+        data = requests.get(url).json()
+
+        for ele in data["hourly"]:
+            for item in ele["weather"]:
+                data_frame = data_frame.append(
+                    {
+                        "city": city,
+                        "latitude": lat,
+                        "longitude": lon,
+                        "date": datetime.fromtimestamp(ele["dt"]),
+                        "weather": item["main"],
+                    },
+                    ignore_index=True,
+                )
+    return data_frame
+
+
+def group_weather_data(frame: pd.DataFrame) -> pd.DataFrame:
+    """Group hourly weather data into daily and select which day is rainy or sunny.
+
+    If the day has more the two hours of sun (weather = 'Clouds' or 'Clear')
+    or rain (weather = 'Rain') then corresponding column (sun / rain) is True.
+
+    Args
+        frame: hourly data to be grouped
+
+    Return:
+        daily data about weather,
+        containing columns [city, latitude, longitude, date, sun, rain]
+    """
+    frame.loc[(frame["weather"] == "Clear") | (frame["weather"] == "Clouds"), "sun"] = 1
+    frame.loc[(frame["weather"] == "Rain"), "rain"] = 1
+
+    frame["date"] = frame["date"].dt.date
+    frame = frame.groupby(["city", "latitude", "longitude", "date"]).sum().reset_index()
+    frame["sun"] = frame["sun"] >= 2
+    frame["rain"] = frame["rain"] >= 2
+    return frame
+
+
+def run() -> pd.DataFrame:
+    """Get daily weather for all cities with information
+     whether day is rainy and sunny, based on hourly data.
+
+    Returns:
+        weather data with columns
+        [city, latitude, longitude, date, sun, rain]
+    """
+
+    since = datetime.today() - timedelta(days=5)
+    until = datetime.today() + timedelta(days=2)
+
+    data_frame = pd.DataFrame()
+    for single_day in range(0, int((until - since).days + 1)):
+        data_frame = data_frame.append(
+            get_weather_data(since + timedelta(days=single_day)), ignore_index=True
+        )
+
+    data_frame.drop_duplicates(inplace=True)
+    data_frame = group_weather_data(data_frame)
+    data_frame.sort_values(by=["date"], ignore_index=True, inplace=True)
+
+    return data_frame
+
+
+if __name__ == "__main__":
+    df = run()
+    print(df)
